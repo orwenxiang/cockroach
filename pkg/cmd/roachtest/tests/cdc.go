@@ -102,7 +102,6 @@ type cdcTester struct {
 	cluster      cluster.Cluster
 	crdbNodes    option.NodeListOption
 	workloadNode option.NodeListOption
-	sinkNodes    option.NodeListOption
 	logger       *logger.Logger
 	promCfg      *prometheus.Config
 
@@ -111,6 +110,16 @@ type cdcTester struct {
 
 	workloadWg *sync.WaitGroup
 	doneCh     chan struct{}
+}
+
+// The node on which the webhook sink will be installed and run on.
+func (ct *cdcTester) webhookSinkNode() option.NodeListOption {
+	return ct.cluster.Node(ct.cluster.Spec().NodeCount)
+}
+
+// The node on which the kafka sink will be installed and run on.
+func (ct *cdcTester) kafkaSinkNode() option.NodeListOption {
+	return ct.cluster.Node(ct.cluster.Spec().NodeCount)
 }
 
 // startStatsCollection sets the start point of the stats collection window
@@ -186,7 +195,7 @@ func (ct *cdcTester) setupSink(args feedArgs) string {
 		sinkURI = `experimental-gs://cockroach-tmp/roachtest/` + ts + "?AUTH=implicit"
 	case webhookSink:
 		ct.t.Status("webhook install")
-		webhookNode := ct.sinkNodes
+		webhookNode := ct.webhookSinkNode()
 		rootFolder := `/home/ubuntu`
 		nodeIPs, _ := ct.cluster.ExternalIP(ct.ctx, ct.logger, webhookNode)
 
@@ -232,10 +241,11 @@ func (ct *cdcTester) setupSink(args feedArgs) string {
 	case pubsubSink:
 		sinkURI = changefeedccl.GcpScheme + `://cockroach-ephemeral` + "?AUTH=implicit&topic_name=pubsubSink-roachtest&region=us-east1"
 	case kafkaSink:
+		kafkaNode := ct.kafkaSinkNode()
 		kafka := kafkaManager{
 			t:             ct.t,
 			c:             ct.cluster,
-			kafkaSinkNode: ct.sinkNodes,
+			kafkaSinkNode: kafkaNode,
 			mon:           ct.mon,
 		}
 		kafka.install(ct.ctx)
@@ -250,7 +260,7 @@ func (ct *cdcTester) setupSink(args feedArgs) string {
 
 		sinkURI = kafka.sinkURL(ct.ctx)
 	case azureEventHubKafkaSink:
-		kafkaNode := ct.sinkNodes
+		kafkaNode := ct.kafkaSinkNode()
 		kafka := kafkaManager{
 			t:             ct.t,
 			c:             ct.cluster,
@@ -671,7 +681,6 @@ func newCDCTester(ctx context.Context, t test.Test, c cluster.Cluster) cdcTester
 		cluster:      c,
 		crdbNodes:    c.Range(1, lastCrdbNode),
 		workloadNode: c.Node(c.Spec().NodeCount),
-		sinkNodes:    c.Node(c.Spec().NodeCount),
 		doneCh:       make(chan struct{}),
 		sinkCache:    make(map[sinkType]string),
 		workloadWg:   &sync.WaitGroup{},
@@ -694,6 +703,7 @@ func newCDCTester(ctx context.Context, t test.Test, c cluster.Cluster) cdcTester
 	settings.Env = append(settings.Env, envVars...)
 
 	c.Start(ctx, t.L(), startOpts, settings, tester.crdbNodes)
+	c.Put(ctx, t.DeprecatedWorkload(), "./workload", tester.workloadNode)
 	tester.startGrafana()
 	return tester
 }
@@ -734,7 +744,8 @@ func runCDCBank(ctx context.Context, t test.Test, c cluster.Cluster) {
 	// spam.
 	c.Run(ctx, option.WithNodes(c.All()), `mkdir -p logs`)
 
-	crdbNodes, workloadNode, kafkaNode := c.CRDBNodes(), c.Node(c.Spec().NodeCount), c.Node(c.Spec().NodeCount)
+	crdbNodes, workloadNode, kafkaNode := c.Range(1, c.Spec().NodeCount-1), c.Node(c.Spec().NodeCount), c.Node(c.Spec().NodeCount)
+	c.Put(ctx, t.DeprecatedWorkload(), "./workload", workloadNode)
 	startOpts := option.DefaultStartOpts()
 	startOpts.RoachprodOpts.ExtraArgs = append(startOpts.RoachprodOpts.ExtraArgs,
 		"--vmodule=changefeed=2",
@@ -749,7 +760,7 @@ func runCDCBank(ctx context.Context, t test.Test, c cluster.Cluster) {
 		t.Fatal(err)
 	}
 
-	c.Run(ctx, option.WithNodes(workloadNode), `./cockroach workload init bank {pgurl:1}`)
+	c.Run(ctx, option.WithNodes(workloadNode), `./workload init bank {pgurl:1}`)
 	db := c.Conn(ctx, t.L(), 1)
 	defer stopFeeds(db)
 
@@ -791,7 +802,7 @@ func runCDCBank(ctx context.Context, t test.Test, c cluster.Cluster) {
 	const requestedResolved = 100
 
 	m.Go(func(ctx context.Context) error {
-		err := c.RunE(ctx, option.WithNodes(workloadNode), `./cockroach workload run bank {pgurl:1} --max-rate=10`)
+		err := c.RunE(ctx, option.WithNodes(workloadNode), `./workload run bank {pgurl:1} --max-rate=10`)
 		if atomic.LoadInt64(&doneAtomic) > 0 {
 			return nil
 		}
@@ -1011,7 +1022,12 @@ func runCDCSchemaRegistry(ctx context.Context, t test.Test, c cluster.Cluster) {
 }
 
 func runCDCKafkaAuth(ctx context.Context, t test.Test, c cluster.Cluster) {
-	crdbNodes, kafkaNode := c.CRDBNodes(), c.Node(c.Spec().NodeCount)
+	lastCrdbNode := c.Spec().NodeCount - 1
+	if lastCrdbNode == 0 {
+		lastCrdbNode = 1
+	}
+
+	crdbNodes, kafkaNode := c.Range(1, lastCrdbNode), c.Node(c.Spec().NodeCount)
 	c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings(), crdbNodes)
 
 	kafka := kafkaManager{
@@ -1081,7 +1097,7 @@ func registerCDC(r registry.Registry) {
 		Name:            "cdc/initial-scan-only",
 		Owner:           registry.OwnerCDC,
 		Benchmark:       true,
-		Cluster:         r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode(), spec.Arch(vm.ArchAMD64)),
+		Cluster:         r.MakeClusterSpec(4, spec.CPU(16), spec.Arch(vm.ArchAMD64)),
 		RequiresLicense: true,
 		// This test uses google cloudStorageSink because it is the fastest,
 		// but it is not a requirement for this test. The sink could be
@@ -1112,7 +1128,7 @@ func registerCDC(r registry.Registry) {
 		Name:             "cdc/tpcc-1000/sink=kafka",
 		Owner:            registry.OwnerCDC,
 		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(4, spec.WorkloadNode(), spec.CPU(16)),
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16)),
 		Leases:           registry.MetamorphicLeases,
 		RequiresLicense:  true,
 		CompatibleClouds: registry.AllExceptAWS,
@@ -1139,7 +1155,7 @@ func registerCDC(r registry.Registry) {
 		Name:             "cdc/tpcc-1000/sink=cloudstorage",
 		Owner:            registry.OwnerCDC,
 		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(4, spec.WorkloadNode(), spec.CPU(16)),
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16)),
 		Leases:           registry.MetamorphicLeases,
 		RequiresLicense:  true,
 		CompatibleClouds: registry.OnlyGCE,
@@ -1169,7 +1185,7 @@ func registerCDC(r registry.Registry) {
 		Name:            "cdc/initial-scan-only/parquet",
 		Owner:           registry.OwnerCDC,
 		Benchmark:       true,
-		Cluster:         r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode(), spec.Arch(vm.ArchAMD64)),
+		Cluster:         r.MakeClusterSpec(4, spec.CPU(16), spec.Arch(vm.ArchAMD64)),
 		RequiresLicense: true,
 		// This test uses google cloudStorageSink because it is the fastest,
 		// but it is not a requirement for this test. The sink could be
@@ -1199,7 +1215,7 @@ func registerCDC(r registry.Registry) {
 		Skip:             "#119295",
 		Owner:            registry.OwnerCDC,
 		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode(), spec.Arch(vm.ArchAMD64)),
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16), spec.Arch(vm.ArchAMD64)),
 		RequiresLicense:  true,
 		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
@@ -1240,7 +1256,7 @@ func registerCDC(r registry.Registry) {
 		Name:      "cdc/tpcc-1000/sink=null",
 		Owner:     registry.OwnerCDC,
 		Benchmark: true,
-		Cluster:   r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode()),
+		Cluster:   r.MakeClusterSpec(4, spec.CPU(16)),
 		Leases:    registry.MetamorphicLeases,
 		// TODO(radu): fix this.
 		CompatibleClouds: registry.AllClouds,
@@ -1268,7 +1284,7 @@ func registerCDC(r registry.Registry) {
 		Name:             "cdc/initial-scan",
 		Owner:            registry.OwnerCDC,
 		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode()),
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16)),
 		Leases:           registry.MetamorphicLeases,
 		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
@@ -1291,7 +1307,7 @@ func registerCDC(r registry.Registry) {
 		Name:             "cdc/sink-chaos",
 		Owner:            `cdc`,
 		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode()),
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16)),
 		Leases:           registry.MetamorphicLeases,
 		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
@@ -1319,7 +1335,7 @@ func registerCDC(r registry.Registry) {
 		Name:             "cdc/crdb-chaos",
 		Owner:            `cdc`,
 		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode()),
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16)),
 		Leases:           registry.MetamorphicLeases,
 		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
@@ -1352,7 +1368,7 @@ func registerCDC(r registry.Registry) {
 		// but this cannot be allocated without some sort of configuration outside
 		// of this test. Look into it.
 		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode()),
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16)),
 		Leases:           registry.MetamorphicLeases,
 		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
@@ -1362,9 +1378,6 @@ func registerCDC(r registry.Registry) {
 			defer ct.Close()
 
 			workloadStart := timeutil.Now()
-			// The ledger workload is not available in the cockroach binary so we
-			// must use the deprecated workload.
-			c.Put(ctx, t.DeprecatedWorkload(), "./workload", ct.workloadNode)
 			ct.runLedgerWorkload(ledgerArgs{duration: "28m"})
 
 			alterStmt := "ALTER DATABASE ledger CONFIGURE ZONE USING range_max_bytes = 805306368, range_min_bytes = 134217728"
@@ -1390,7 +1403,7 @@ func registerCDC(r registry.Registry) {
 		Name:             "cdc/cloud-sink-gcs/rangefeed=true",
 		Owner:            `cdc`,
 		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode()),
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16)),
 		Leases:           registry.MetamorphicLeases,
 		CompatibleClouds: registry.OnlyGCE,
 		Suites:           registry.Suites(registry.Nightly),
@@ -1420,7 +1433,7 @@ func registerCDC(r registry.Registry) {
 		Name:             "cdc/pubsub-sink",
 		Owner:            `cdc`,
 		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode()),
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16)),
 		CompatibleClouds: registry.OnlyGCE,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
@@ -1456,7 +1469,7 @@ func registerCDC(r registry.Registry) {
 		Name:             "cdc/pubsub-sink/assume-role",
 		Owner:            `cdc`,
 		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode()),
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16)),
 		Leases:           registry.MetamorphicLeases,
 		CompatibleClouds: registry.OnlyGCE,
 		Suites:           registry.Suites(registry.Nightly),
@@ -1494,7 +1507,7 @@ func registerCDC(r registry.Registry) {
 		Name:             "cdc/cloud-sink-gcs/assume-role",
 		Owner:            `cdc`,
 		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode()),
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16)),
 		Leases:           registry.MetamorphicLeases,
 		CompatibleClouds: registry.OnlyGCE,
 		Suites:           registry.Suites(registry.Nightly),
@@ -1526,7 +1539,7 @@ func registerCDC(r registry.Registry) {
 		Name:             "cdc/webhook-sink",
 		Owner:            `cdc`,
 		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode()),
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16)),
 		Leases:           registry.MetamorphicLeases,
 		CompatibleClouds: registry.OnlyGCE,
 		Suites:           registry.Suites(registry.Nightly),
@@ -1537,7 +1550,7 @@ func registerCDC(r registry.Registry) {
 
 			// Consider an installation failure to be a flake which is out of
 			// our control. This should be rare.
-			err := c.Install(ctx, t.L(), ct.sinkNodes, "go")
+			err := c.Install(ctx, t.L(), ct.webhookSinkNode(), "go")
 			if err != nil {
 				t.Skip(err)
 			}
@@ -1582,7 +1595,7 @@ func registerCDC(r registry.Registry) {
 		Owner:     `cdc`,
 		Benchmark: true,
 		// Only Kafka 3 supports Arm64, but the broker setup for Oauth used only works with Kafka 2
-		Cluster:          r.MakeClusterSpec(4, spec.WorkloadNode(), spec.Arch(vm.ArchAMD64)),
+		Cluster:          r.MakeClusterSpec(4, spec.Arch(vm.ArchAMD64)),
 		Leases:           registry.MetamorphicLeases,
 		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
@@ -1602,7 +1615,7 @@ func registerCDC(r registry.Registry) {
 			// (This can be removed once #108530 resolved).
 			ct.runTPCCWorkload(tpccArgs{warehouses: 1, duration: "30s"})
 
-			kafkaNode := ct.sinkNodes
+			kafkaNode := ct.kafkaSinkNode()
 			kafka := kafkaManager{
 				t:             ct.t,
 				c:             ct.cluster,
@@ -1629,7 +1642,7 @@ func registerCDC(r registry.Registry) {
 	r.Add(registry.TestSpec{
 		Name:             "cdc/kafka-topics",
 		Owner:            `cdc`,
-		Cluster:          r.MakeClusterSpec(4, spec.WorkloadNode(), spec.Arch(vm.ArchAMD64)),
+		Cluster:          r.MakeClusterSpec(4, spec.Arch(vm.ArchAMD64)),
 		Leases:           registry.MetamorphicLeases,
 		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
@@ -1753,7 +1766,7 @@ func registerCDC(r registry.Registry) {
 		Name:             "cdc/kafka-azure",
 		Owner:            `cdc`,
 		CompatibleClouds: registry.OnlyAzure,
-		Cluster:          r.MakeClusterSpec(2, spec.WorkloadNode()),
+		Cluster:          r.MakeClusterSpec(2),
 		Leases:           registry.MetamorphicLeases,
 		Suites:           registry.Suites(registry.Nightly),
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -1779,7 +1792,7 @@ func registerCDC(r registry.Registry) {
 	r.Add(registry.TestSpec{
 		Name:             "cdc/bank",
 		Owner:            `cdc`,
-		Cluster:          r.MakeClusterSpec(4, spec.WorkloadNode()),
+		Cluster:          r.MakeClusterSpec(4),
 		Leases:           registry.MetamorphicLeases,
 		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
@@ -2799,7 +2812,7 @@ func (tw *tpccWorkload) install(ctx context.Context, c cluster.Cluster) {
 
 func (tw *tpccWorkload) run(ctx context.Context, c cluster.Cluster, workloadDuration string) {
 	var cmd bytes.Buffer
-	fmt.Fprintf(&cmd, "./cockroach workload run tpcc --warehouses=%d --duration=%s ", tw.tpccWarehouseCount, workloadDuration)
+	fmt.Fprintf(&cmd, "./workload run tpcc --warehouses=%d --duration=%s ", tw.tpccWarehouseCount, workloadDuration)
 	if tw.tolerateErrors {
 		cmd.WriteString("--tolerate-errors ")
 	}

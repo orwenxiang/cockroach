@@ -1406,17 +1406,18 @@ func RemoveLabels(l *logger.Logger, clusterName string, labels []string) error {
 
 // Create TODO
 func Create(
-	ctx context.Context, l *logger.Logger, username string, opts ...*cloud.ClusterCreateOpts,
+	ctx context.Context,
+	l *logger.Logger,
+	username string,
+	numNodes int,
+	createVMOpts vm.CreateOpts,
+	providerOptsContainer vm.ProviderOptionsContainer,
 ) (retErr error) {
-	var numNodes int
-	for _, o := range opts {
-		numNodes = numNodes + o.Nodes
-	}
 	if numNodes <= 0 || numNodes >= 1000 {
 		// Upper limit is just for safety.
 		return fmt.Errorf("number of nodes must be in [1..999]")
 	}
-	clusterName := opts[0].CreateOpts.ClusterName
+	clusterName := createVMOpts.ClusterName
 	if err := verifyClusterName(l, clusterName, username); err != nil {
 		return err
 	}
@@ -1463,25 +1464,21 @@ func Create(
 		}
 
 		// If the local cluster is being created, force the local Provider to be used
-		for _, o := range opts {
-			o.CreateOpts.VMProviders = []string{local.ProviderName}
-		}
+		createVMOpts.VMProviders = []string{local.ProviderName}
 	}
 
-	for _, o := range opts {
-		if o.CreateOpts.SSDOpts.FileSystem == vm.Zfs {
-			for _, provider := range o.CreateOpts.VMProviders {
-				if provider != gce.ProviderName {
-					return fmt.Errorf(
-						"creating a node with --filesystem=zfs is currently only supported on gce",
-					)
-				}
+	if createVMOpts.SSDOpts.FileSystem == vm.Zfs {
+		for _, provider := range createVMOpts.VMProviders {
+			if provider != gce.ProviderName {
+				return fmt.Errorf(
+					"creating a node with --filesystem=zfs is currently only supported on gce",
+				)
 			}
 		}
 	}
 
 	l.Printf("Creating cluster %s with %d nodes...", clusterName, numNodes)
-	if createErr := cloud.CreateCluster(l, opts); createErr != nil {
+	if createErr := cloud.CreateCluster(l, numNodes, createVMOpts, providerOptsContainer); createErr != nil {
 		return createErr
 	}
 

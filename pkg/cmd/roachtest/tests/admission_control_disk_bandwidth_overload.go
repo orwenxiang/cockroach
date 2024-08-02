@@ -46,18 +46,20 @@ func registerDiskBandwidthOverload(r registry.Registry) {
 		Benchmark:        true,
 		CompatibleClouds: registry.AllClouds,
 		Suites:           registry.ManualOnly,
-		Cluster:          r.MakeClusterSpec(2, spec.CPU(8), spec.WorkloadNode()),
+		Cluster:          r.MakeClusterSpec(2, spec.CPU(8)),
 		RequiresLicense:  true,
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			if c.Spec().NodeCount != 2 {
 				t.Fatalf("expected 2 nodes, found %d", c.Spec().NodeCount)
 			}
+			crdbNodes := c.Spec().NodeCount - 1
+			workloadNode := crdbNodes + 1
 
 			promCfg := &prometheus.Config{}
-			promCfg.WithPrometheusNode(c.WorkloadNode().InstallNodes()[0]).
-				WithNodeExporter(c.CRDBNodes().InstallNodes()).
-				WithCluster(c.CRDBNodes().InstallNodes()).
+			promCfg.WithPrometheusNode(c.Node(workloadNode).InstallNodes()[0]).
+				WithNodeExporter(c.Range(1, c.Spec().NodeCount-1).InstallNodes()).
+				WithCluster(c.Range(1, c.Spec().NodeCount-1).InstallNodes()).
 				WithGrafanaDashboardJSON(grafana.SnapshotAdmissionControlGrafanaJSON)
 			err := c.StartGrafana(ctx, t.L(), promCfg)
 			require.NoError(t, err)
@@ -67,7 +69,7 @@ func registerDiskBandwidthOverload(r registry.Registry) {
 				"--vmodule=io_load_listener=2")
 			roachtestutil.SetDefaultAdminUIPort(c, &startOpts.RoachprodOpts)
 			settings := install.MakeClusterSettings()
-			c.Start(ctx, t.L(), startOpts, settings, c.CRDBNodes())
+			c.Start(ctx, t.L(), startOpts, settings, c.Range(1, crdbNodes))
 
 			promClient, err := clusterstats.SetupCollectorPromClient(ctx, c, t.L(), promCfg)
 			require.NoError(t, err)
@@ -109,14 +111,14 @@ func registerDiskBandwidthOverload(r registry.Registry) {
 				))
 			}
 
-			if err := setBandwidthLimit(c.CRDBNodes(), "wbps", 128<<20 /* 128MiB */, false); err != nil {
+			if err := setBandwidthLimit(c.Range(1, crdbNodes), "wbps", 128<<20 /* 128MiB */, false); err != nil {
 				t.Fatal(err)
 			}
 
 			// TODO(aaditya): Extend this test to also limit reads once we have a
 			// mechanism to pace read traffic in AC.
 
-			db := c.Conn(ctx, t.L(), len(c.CRDBNodes()))
+			db := c.Conn(ctx, t.L(), crdbNodes)
 			defer db.Close()
 
 			const bandwidthLimit = 75
@@ -128,15 +130,15 @@ func registerDiskBandwidthOverload(r registry.Registry) {
 			}
 
 			duration := 30 * time.Minute
-			m := c.NewMonitor(ctx, c.CRDBNodes())
+			m := c.NewMonitor(ctx, c.Range(1, crdbNodes))
 			m.Go(func(ctx context.Context) error {
 				t.Status(fmt.Sprintf("starting foreground kv workload thread (<%s)", time.Minute))
 				dur := " --duration=" + duration.String()
-				url := fmt.Sprintf(" {pgurl%s}", c.CRDBNodes())
+				url := fmt.Sprintf(" {pgurl:1-%d}", crdbNodes)
 				cmd := "./cockroach workload run kv --init --histograms=perf/stats.json --concurrency=2 " +
 					"--splits=1000 --read-percent=50 --min-block-bytes=4096 --max-block-bytes=4096 " +
 					"--txn-qos='regular' --tolerate-errors" + dur + url
-				c.Run(ctx, option.WithNodes(c.WorkloadNode()), cmd)
+				c.Run(ctx, option.WithNodes(c.Node(workloadNode)), cmd)
 				return nil
 			})
 
@@ -144,11 +146,11 @@ func registerDiskBandwidthOverload(r registry.Registry) {
 				time.Sleep(1 * time.Minute)
 				t.Status(fmt.Sprintf("starting background kv workload thread (<%s)", time.Minute))
 				dur := " --duration=" + duration.String()
-				url := fmt.Sprintf(" {pgurl%s}", c.CRDBNodes())
+				url := fmt.Sprintf(" {pgurl:1-%d}", crdbNodes)
 				cmd := "./cockroach workload run kv --init --histograms=perf/stats.json --concurrency=1024 " +
 					"--splits=1000 --read-percent=0 --min-block-bytes=4096 --max-block-bytes=4096 " +
 					"--txn-qos='background' --tolerate-errors" + dur + url
-				c.Run(ctx, option.WithNodes(c.WorkloadNode()), cmd)
+				c.Run(ctx, option.WithNodes(c.Node(workloadNode)), cmd)
 				return nil
 			})
 

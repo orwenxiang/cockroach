@@ -55,6 +55,8 @@ func registerYCSB(r registry.Registry) {
 			t.Skip("YCSB zfs benchmark can only be run on GCE", "")
 		}
 
+		nodes := c.Spec().NodeCount - 1
+
 		conc, ok := concurrencyConfigs[wl][cpus]
 		if !ok {
 			t.Fatalf("missing concurrency for (workload, cpus) = (%s, %d)", wl, cpus)
@@ -65,7 +67,8 @@ func registerYCSB(r registry.Registry) {
 			settings.Env = append(settings.Env, "COCKROACH_GLOBAL_MVCC_RANGE_TOMBSTONE=true")
 		}
 
-		c.Start(ctx, t.L(), option.NewStartOpts(option.NoBackupSchedule), settings, c.CRDBNodes())
+		c.Put(ctx, t.DeprecatedWorkload(), "./workload", c.Node(nodes+1))
+		c.Start(ctx, t.L(), option.NewStartOpts(option.NoBackupSchedule), settings, c.Range(1, nodes))
 
 		db := c.Conn(ctx, t.L(), 1)
 		err := enableIsolationLevels(ctx, t, db)
@@ -75,7 +78,7 @@ func registerYCSB(r registry.Registry) {
 		require.NoError(t, db.Close())
 
 		t.Status("running workload")
-		m := c.NewMonitor(ctx, c.CRDBNodes())
+		m := c.NewMonitor(ctx, c.Range(1, nodes))
 		m.Go(func(ctx context.Context) error {
 			var args string
 			args += " --ramp=" + ifLocal(c, "0s", "2m")
@@ -87,11 +90,11 @@ func registerYCSB(r registry.Registry) {
 				args += " " + envFlags
 			}
 			cmd := fmt.Sprintf(
-				"./cockroach workload run ycsb --init --insert-count=1000000 --workload=%s --concurrency=%d"+
+				"./workload run ycsb --init --insert-count=1000000 --workload=%s --concurrency=%d"+
 					" --splits=%d --histograms="+t.PerfArtifactsDir()+"/stats.json"+args+
-					" {pgurl%s}",
-				wl, conc, len(c.CRDBNodes()), c.CRDBNodes())
-			c.Run(ctx, option.WithNodes(c.WorkloadNode()), cmd)
+					" {pgurl:1-%d}",
+				wl, conc, nodes, nodes)
+			c.Run(ctx, option.WithNodes(c.Node(nodes+1)), cmd)
 			return nil
 		})
 		m.Wait()
@@ -109,7 +112,7 @@ func registerYCSB(r registry.Registry) {
 				Name:      name,
 				Owner:     registry.OwnerTestEng,
 				Benchmark: true,
-				Cluster:   r.MakeClusterSpec(4, spec.CPU(cpus), spec.WorkloadNode()),
+				Cluster:   r.MakeClusterSpec(4, spec.CPU(cpus)),
 				Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 					runYCSB(ctx, t, c, wl, cpus, false /* readCommitted */, false /* rangeTombstone */)
 				},
@@ -122,7 +125,7 @@ func registerYCSB(r registry.Registry) {
 					Name:      fmt.Sprintf("zfs/ycsb/%s/nodes=3/cpu=%d", wl, cpus),
 					Owner:     registry.OwnerStorage,
 					Benchmark: true,
-					Cluster:   r.MakeClusterSpec(4, spec.CPU(cpus), spec.WorkloadNode(), spec.SetFileSystem(spec.Zfs)),
+					Cluster:   r.MakeClusterSpec(4, spec.CPU(cpus), spec.SetFileSystem(spec.Zfs)),
 					Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 						runYCSB(ctx, t, c, wl, cpus, false /* readCommitted */, false /* rangeTombstone */)
 					},
@@ -136,7 +139,7 @@ func registerYCSB(r registry.Registry) {
 					Name:      fmt.Sprintf("%s/isolation-level=read-committed", name),
 					Owner:     registry.OwnerTestEng,
 					Benchmark: true,
-					Cluster:   r.MakeClusterSpec(4, spec.CPU(cpus), spec.WorkloadNode()),
+					Cluster:   r.MakeClusterSpec(4, spec.CPU(cpus)),
 					Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 						runYCSB(ctx, t, c, wl, cpus, true /* readCommitted */, false /* rangeTombstone */)
 					},
@@ -150,7 +153,7 @@ func registerYCSB(r registry.Registry) {
 					Name:      fmt.Sprintf("%s/mvcc-range-keys=global", name),
 					Owner:     registry.OwnerTestEng,
 					Benchmark: true,
-					Cluster:   r.MakeClusterSpec(4, spec.CPU(cpus), spec.WorkloadNode()),
+					Cluster:   r.MakeClusterSpec(4, spec.CPU(cpus)),
 					Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 						runYCSB(ctx, t, c, wl, cpus, false /* readCommitted */, true /* rangeTombstone */)
 					},

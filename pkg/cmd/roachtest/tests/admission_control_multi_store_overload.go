@@ -25,9 +25,11 @@ import (
 
 func registerMultiStoreOverload(r registry.Registry) {
 	runKV := func(ctx context.Context, t test.Test, c cluster.Cluster) {
+		nodes := c.Spec().NodeCount - 1
+		c.Put(ctx, t.DeprecatedWorkload(), "./workload", c.Node(nodes+1))
 		startOpts := option.NewStartOpts(option.NoBackupSchedule)
 		startOpts.RoachprodOpts.StoreCount = 2
-		c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(), c.CRDBNodes())
+		c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(), c.Range(1, nodes))
 
 		db := c.Conn(ctx, t.L(), 1)
 		defer db.Close()
@@ -59,18 +61,18 @@ func registerMultiStoreOverload(r registry.Registry) {
 		dur := 20 * time.Minute
 		duration := " --duration=" + ifLocal(c, "10s", dur.String())
 		histograms := " --histograms=" + t.PerfArtifactsDir() + "/stats.json"
-		m1 := c.NewMonitor(ctx, c.CRDBNodes())
+		m1 := c.NewMonitor(ctx, c.Range(1, nodes))
 		m1.Go(func(ctx context.Context) error {
 			dbRegular := " --db=db1"
 			concurrencyRegular := ifLocal(c, "", " --concurrency=8")
 			readPercentRegular := " --read-percent=95"
-			cmdRegular := fmt.Sprintf("./cockroach workload run kv --init"+
+			cmdRegular := fmt.Sprintf("./workload run kv --init"+
 				dbRegular+histograms+concurrencyRegular+duration+readPercentRegular+
-				" {pgurl%s}", c.CRDBNodes())
-			c.Run(ctx, option.WithNodes(c.WorkloadNode()), cmdRegular)
+				" {pgurl:1-%d}", nodes)
+			c.Run(ctx, option.WithNodes(c.Node(nodes+1)), cmdRegular)
 			return nil
 		})
-		m2 := c.NewMonitor(ctx, c.CRDBNodes())
+		m2 := c.NewMonitor(ctx, c.Range(1, nodes))
 		m2.Go(func(ctx context.Context) error {
 			dbOverload := " --db=db2"
 			concurrencyOverload := ifLocal(c, "", " --concurrency=64")
@@ -78,10 +80,10 @@ func registerMultiStoreOverload(r registry.Registry) {
 			bs := 1 << 16 /* 64KB */
 			blockSizeOverload := fmt.Sprintf(" --min-block-bytes=%d --max-block-bytes=%d",
 				bs, bs)
-			cmdOverload := fmt.Sprintf("./cockroach workload run kv --init"+
+			cmdOverload := fmt.Sprintf("./workload run kv --init"+
 				dbOverload+histograms+concurrencyOverload+duration+readPercentOverload+blockSizeOverload+
-				" {pgurl%s}", c.CRDBNodes())
-			c.Run(ctx, option.WithNodes(c.WorkloadNode()), cmdOverload)
+				" {pgurl:1-%d}", nodes)
+			c.Run(ctx, option.WithNodes(c.Node(nodes+1)), cmdOverload)
 			return nil
 		})
 		m1.Wait()
@@ -94,7 +96,7 @@ func registerMultiStoreOverload(r registry.Registry) {
 		Benchmark:        true,
 		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Weekly),
-		Cluster:          r.MakeClusterSpec(2, spec.CPU(8), spec.WorkloadNode(), spec.SSD(2)),
+		Cluster:          r.MakeClusterSpec(2, spec.CPU(8), spec.SSD(2)),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runKV(ctx, t, c)
