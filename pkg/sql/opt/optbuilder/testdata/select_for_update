@@ -3036,8 +3036,7 @@ lock t
  └── project
       ├── columns: a:1!null b:2
       └── scan t
-           ├── columns: a:1!null b:2 crdb_internal_mvcc_timestamp:3 tableoid:4
-           └── locking: none,skip-locked
+           └── columns: a:1!null b:2 crdb_internal_mvcc_timestamp:3 tableoid:4
 
 build
 SELECT * FROM t FOR NO KEY UPDATE SKIP LOCKED
@@ -3057,8 +3056,7 @@ lock t
  └── project
       ├── columns: a:1!null b:2
       └── scan t
-           ├── columns: a:1!null b:2 crdb_internal_mvcc_timestamp:3 tableoid:4
-           └── locking: none,skip-locked
+           └── columns: a:1!null b:2 crdb_internal_mvcc_timestamp:3 tableoid:4
 
 build
 SELECT * FROM t FOR SHARE SKIP LOCKED
@@ -3078,8 +3076,7 @@ lock t
  └── project
       ├── columns: a:1!null b:2
       └── scan t
-           ├── columns: a:1!null b:2 crdb_internal_mvcc_timestamp:3 tableoid:4
-           └── locking: none,skip-locked
+           └── columns: a:1!null b:2 crdb_internal_mvcc_timestamp:3 tableoid:4
 
 build
 SELECT * FROM t FOR KEY SHARE SKIP LOCKED
@@ -3099,8 +3096,7 @@ lock t
  └── project
       ├── columns: a:1!null b:2
       └── scan t
-           ├── columns: a:1!null b:2 crdb_internal_mvcc_timestamp:3 tableoid:4
-           └── locking: none,skip-locked
+           └── columns: a:1!null b:2 crdb_internal_mvcc_timestamp:3 tableoid:4
 
 build
 SELECT * FROM t FOR KEY SHARE FOR SHARE SKIP LOCKED
@@ -3123,8 +3119,7 @@ lock t
       └── project
            ├── columns: a:1!null b:2
            └── scan t
-                ├── columns: a:1!null b:2 crdb_internal_mvcc_timestamp:3 tableoid:4
-                └── locking: none,skip-locked
+                └── columns: a:1!null b:2 crdb_internal_mvcc_timestamp:3 tableoid:4
 
 build
 SELECT * FROM t FOR KEY SHARE FOR SHARE SKIP LOCKED FOR NO KEY UPDATE
@@ -3150,8 +3145,7 @@ lock t
            └── project
                 ├── columns: a:1!null b:2
                 └── scan t
-                     ├── columns: a:1!null b:2 crdb_internal_mvcc_timestamp:3 tableoid:4
-                     └── locking: none,skip-locked
+                     └── columns: a:1!null b:2 crdb_internal_mvcc_timestamp:3 tableoid:4
 
 build
 SELECT * FROM t FOR KEY SHARE FOR SHARE SKIP LOCKED FOR NO KEY UPDATE FOR UPDATE SKIP LOCKED
@@ -3180,8 +3174,7 @@ lock t
                 └── project
                      ├── columns: a:1!null b:2
                      └── scan t
-                          ├── columns: a:1!null b:2 crdb_internal_mvcc_timestamp:3 tableoid:4
-                          └── locking: none,skip-locked
+                          └── columns: a:1!null b:2 crdb_internal_mvcc_timestamp:3 tableoid:4
 
 build
 SELECT * FROM t FOR UPDATE OF t SKIP LOCKED
@@ -3201,8 +3194,7 @@ lock t
  └── project
       ├── columns: a:1!null b:2
       └── scan t
-           ├── columns: a:1!null b:2 crdb_internal_mvcc_timestamp:3 tableoid:4
-           └── locking: none,skip-locked
+           └── columns: a:1!null b:2 crdb_internal_mvcc_timestamp:3 tableoid:4
 
 build
 SELECT * FROM t FOR UPDATE OF t2 SKIP LOCKED
@@ -3234,8 +3226,7 @@ lock t
  └── project
       ├── columns: "?column?":5!null a:1!null
       ├── scan t
-      │    ├── columns: a:1!null b:2 crdb_internal_mvcc_timestamp:3 tableoid:4
-      │    └── locking: none,skip-locked
+      │    └── columns: a:1!null b:2 crdb_internal_mvcc_timestamp:3 tableoid:4
       └── projections
            └── 1 [as="?column?":5]
 

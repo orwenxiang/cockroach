@@ -168,20 +168,7 @@ func (b *Builder) buildDataSource(
 				}
 			}
 			if b.shouldBuildLockOp() {
-				// If we're implementing FOR UPDATE / FOR SHARE with a Lock operator on
-				// top of the plan, then this can be an unlocked scan. But if the
-				// locking uses SKIP LOCKED then we still need this scan to skip over
-				// locks even if it does not take any locks itself.
-				if locking.get().WaitPolicy == tree.LockWaitSkipLocked {
-					// Create a dummy lockingSpec to get just the skip locked behavior.
-					locking = lockingSpec{&lockingItem{
-						item: &tree.LockingItem{
-							WaitPolicy: tree.LockWaitSkipLocked,
-						},
-					}}
-				} else {
-					locking = nil
-				}
+				locking = nil
 			}
 			return b.buildScan(
 				tabMeta,
@@ -517,20 +504,7 @@ func (b *Builder) buildScanFromTableRef(
 		}
 	}
 	if b.shouldBuildLockOp() {
-		// If we're implementing FOR UPDATE / FOR SHARE with a Lock operator on top
-		// of the plan, then this can be an unlocked scan. But if the locking uses
-		// SKIP LOCKED then we still need this scan to skip over locks even if it
-		// does not take any locks itself.
-		if locking.get().WaitPolicy == tree.LockWaitSkipLocked {
-			// Create a dummy lockingSpec to get just the skip locked behavior.
-			locking = lockingSpec{&lockingItem{
-				item: &tree.LockingItem{
-					WaitPolicy: tree.LockWaitSkipLocked,
-				},
-			}}
-		} else {
-			locking = nil
-		}
+		locking = nil
 	}
 	return b.buildScan(
 		tabMeta, ordinals, indexFlags, locking, inScope, false, /* disableNotVisibleIndex */
@@ -773,7 +747,7 @@ func (b *Builder) buildScan(
 	}
 	if locking.isSet() {
 		private.Locking = locking.get()
-		if private.Locking.IsLocking() && b.shouldUseGuaranteedDurability() {
+		if b.shouldUseGuaranteedDurability() {
 			// Under weaker isolation levels we use fully-durable locks for SELECT FOR
 			// UPDATE statements, SELECT FOR SHARE statements, and constraint checks
 			// (e.g. FK checks), regardless of locking strength and wait policy.
@@ -1239,6 +1213,10 @@ func (b *Builder) buildSelectStmtWithoutParens(
 		outScope = projectionsScope
 	}
 
+	if limit != nil {
+		b.buildLimit(limit, inScope, outScope)
+	}
+
 	// Remove locking items from scope, validate that they were found within the
 	// FROM clause, and build them.
 	for range lockingClause {
@@ -1248,10 +1226,6 @@ func (b *Builder) buildSelectStmtWithoutParens(
 			// TODO(michae2): Combine multiple buildLock calls for the same table.
 			b.buildLocking(item, outScope)
 		}
-	}
-
-	if limit != nil {
-		b.buildLimit(limit, inScope, outScope)
 	}
 
 	// TODO(rytaft): Support FILTER expression.
